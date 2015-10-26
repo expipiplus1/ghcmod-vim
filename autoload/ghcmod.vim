@@ -29,8 +29,31 @@ function! ghcmod#info(fexp, path, module) "{{{
   endif
   " Remove trailing newlines to prevent empty lines
   let l:output = substitute(l:output, '\n*$', '', '')
-  " Remove 'Dummy:0:0:Error:' prefix.
-  return substitute(l:output, '^Dummy:0:0:Error:', '', '')
+  return s:remove_dummy_prefix(l:output)
+endfunction "}}}
+
+function! ghcmod#split(line, col, path, module) "{{{
+  " `ghc-mod split` is available since v5.0.0.
+  let l:cmd = ghcmod#build_command(['split', a:path, a:module, a:line, a:col])
+  let l:lines = s:system('split', l:cmd)
+  if empty(l:lines)
+    return []
+  endif
+  let l:parsed = matchlist(l:lines[0], '\(\d\+\) \(\d\+\) \(\d\+\) \(\d\+\) "\(.*\)"')
+  if len(l:parsed) < 5
+    return []
+  endif
+  return split(l:parsed[5], '\n')
+endfunction "}}}
+
+function! ghcmod#sig(line, col, path, module) "{{{
+  " `ghc-mod sig` is available since v5.0.0.
+  let l:cmd = ghcmod#build_command(['sig', a:path, a:module, a:line, a:col])
+  let l:lines = s:system('sig', l:cmd)
+  if len(l:lines) < 3
+    return []
+  endif
+  return [l:lines[0], l:lines[2 :]]
 endfunction "}}}
 
 function! ghcmod#type(line, col, path, module) "{{{
@@ -138,34 +161,18 @@ function! s:build_make_command(type, path) "{{{
 endfunction "}}}
 
 function! ghcmod#make(type, path) "{{{
-  let l:tmpfile = tempname()
   try
     let l:args = s:build_make_command(a:type, a:path)
-    let l:proc = s:plineopen2([{'args': l:args,  'fd': { 'stdin': '', 'stdout': l:tmpfile, 'stderr': '' }}])
-    let [l:cond, l:status] = ghcmod#util#wait(l:proc)
-    let l:tries = 1
-    while l:cond ==# 'run'
-      if l:tries >= 50
-        call l:proc.kill(15)  " SIGTERM
-        call l:proc.waitpid()
-        throw printf('ghcmod#make: `ghc-mod %s` takes too long time!', a:type)
-      endif
-      sleep 100m
-      let [l:cond, l:status] = ghcmod#util#wait(l:proc)
-      let l:tries += 1
-    endwhile
-    return ghcmod#parse_make(readfile(l:tmpfile), b:ghcmod_basedir)
+    return ghcmod#parse_make(s:system(a:type, l:args), b:ghcmod_basedir)
   catch
     call ghcmod#util#print_error(printf('%s %s', v:throwpoint, v:exception))
-  finally
-    call delete(l:tmpfile)
   endtry
 endfunction "}}}
 
 function! ghcmod#async_make(type, path, callback) "{{{
   let l:tmpfile = tempname()
   let l:args = s:build_make_command(a:type, a:path)
-  let l:proc = s:plineopen2([{'args': l:args,  'fd': { 'stdin': '', 'stdout': l:tmpfile, 'stderr': '' }}])
+  let l:proc = s:plineopen3([{'args': l:args,  'fd': { 'stdin': '', 'stdout': l:tmpfile, 'stderr': '' }}])
   let l:obj = {
         \ 'proc': l:proc,
         \ 'tmpfile': l:tmpfile,
@@ -192,6 +199,8 @@ function! ghcmod#expand(path) "{{{
   let l:qflist = []
   let l:cmd = ghcmod#build_command(['expand', "-b '\n'", a:path])
   for l:line in split(ghcmod#system(l:cmd), '\n')
+    let l:line = s:remove_dummy_prefix(l:line)
+
     " path:line:col1-col2: message
     " or path:line:col: message
     let l:m = matchlist(l:line, '^\s*\(\(\f\| \)\+\):\(\d\+\):\(\d\+\)\%(-\(\d\+\)\)\?\%(:\s*\(.*\)\)\?$')
@@ -231,6 +240,10 @@ function! ghcmod#expand(path) "{{{
     call s:fix_qf_lnum_col(l:qf)
   endfor
   return l:qflist
+endfunction "}}}
+
+function! s:remove_dummy_prefix(str) "{{{
+  return substitute(a:str, '^Dummy:0:0:Error:', '', '')
 endfunction "}}}
 
 function! ghcmod#add_autogen_dir(path, cmd) "{{{
@@ -323,17 +336,48 @@ function! ghcmod#kill_modi(sig) "{{{
 endfunction "}}}
 
 function! ghcmod#system(...) "{{{
-  lcd `=ghcmod#basedir()`
-  let l:ret = call('vimproc#system', a:000)
-  lcd -
+  let l:dir = getcwd()
+  try
+    lcd `=ghcmod#basedir()`
+    let l:ret = call('vimproc#system', a:000)
+  finally
+    lcd `=l:dir`
+  endtry
   return l:ret
 endfunction "}}}
 
-function! s:plineopen2(...) "{{{
-  lcd `=ghcmod#basedir()`
-  let l:ret = call('vimproc#plineopen2', a:000)
-  lcd -
+function! s:plineopen3(...) "{{{
+  let l:dir = getcwd()
+  try
+    lcd `=ghcmod#basedir()`
+    let l:ret = call('vimproc#plineopen3', a:000)
+  finally
+    lcd `=l:dir`
+  endtry
   return l:ret
+endfunction "}}}
+
+function! s:system(type, args) "{{{
+  let l:tmpfile = tempname()
+  try
+    let l:proc = s:plineopen3([{'args': a:args,  'fd': { 'stdin': '', 'stdout': l:tmpfile, 'stderr': '' }}])
+    let [l:cond, l:status] = ghcmod#util#wait(l:proc)
+    let l:tries = 1
+    while l:cond ==# 'run'
+      if l:tries >= 50
+        call l:proc.kill(15)  " SIGTERM
+        call l:proc.waitpid()
+        throw printf('ghcmod#make: `ghc-mod %s` takes too long time!', a:type)
+      endif
+      sleep 100m
+      let [l:cond, l:status] = ghcmod#util#wait(l:proc)
+      let l:tries += 1
+    endwhile
+    let l:lines = readfile(l:tmpfile)
+    return l:lines
+  finally
+    call delete(l:tmpfile)
+  endtry
 endfunction "}}}
 
 function! ghcmod#basedir() "{{{
@@ -348,22 +392,21 @@ endfunction "}}}
 function! s:find_basedir() "{{{
   " search Cabal file
   if !exists('b:ghcmod_basedir')
-    let l:ghcmod_basedir = expand('%:p:h')
-    let l:dir = l:ghcmod_basedir
-    for _ in range(6)
-      if !empty(glob(l:dir . '/*.cabal', 0))
-        let l:ghcmod_basedir = l:dir
-        break
-      endif
-      let l:dir = fnamemodify(l:dir, ':h')
-    endfor
-    let b:ghcmod_basedir = l:ghcmod_basedir
+    " `ghc-mod root` is available since v4.0.0.
+    let l:dir = getcwd()
+    try
+      lcd `=expand('%:p:h')`
+      let b:ghcmod_basedir =
+        \ substitute(vimproc#system(['ghc-mod', 'root']), '\n*$', '', '')
+    finally
+      lcd `=l:dir`
+    endtry
   endif
   return b:ghcmod_basedir
 endfunction "}}}
 
 function! ghcmod#version() "{{{
-  return [1, 2, 0]
+  return [1, 3, 1]
 endfunction "}}}
 
 " vim: set ts=2 sw=2 et fdm=marker:

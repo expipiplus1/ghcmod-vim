@@ -20,7 +20,7 @@ endfunction "}}}
 
 function! ghcmod#command#type(force) "{{{
   let l:line = line('.')
-  let l:col = col('.')
+  let l:col = ghcmod#util#getcol()
 
   if exists('b:ghcmod_type')
     if b:ghcmod_type.spans(l:line, l:col)
@@ -56,6 +56,44 @@ function! ghcmod#command#type_clear() "{{{
   endif
 endfunction "}}}
 
+function! ghcmod#command#split_function_case(force) "{{{
+  let l:path = s:buffer_path(a:force)
+  if empty(l:path)
+    return
+  endif
+
+  let l:module = ghcmod#detect_module()
+  let l:decls = ghcmod#split(line('.'), col('.'), l:path, l:module)
+  if empty(l:decls)
+    call ghcmod#util#print_warning('No splittable constructor')
+    return
+  endif
+
+  call append(line('.'), l:decls)
+  delete _
+endfunction "}}}
+
+function! ghcmod#command#initial_code_from_signature(force) "{{{
+  let l:path = s:buffer_path(a:force)
+  if empty(l:path)
+    return
+  endif
+
+  let l:initial_code = ghcmod#sig(line('.'), col('.'), l:path, ghcmod#detect_module())
+  if empty(l:initial_code)
+    call ghcmod#util#print_warning('Cannot generate initial code')
+    return
+  endif
+
+  let [l:sort, l:codes] = l:initial_code
+  if l:sort == 'instance'
+    let l:sw = exists('*shifwidth') ? shiftwidth() : &shiftwidth
+    let l:indent = repeat(' ', l:sw)
+    call map(l:codes, 'l:indent . v:val')
+  endif
+  call append('.', l:codes)
+endfunction "}}}
+
 function! ghcmod#command#type_insert(force) "{{{
   let l:path = s:buffer_path(a:force)
   if empty(l:path)
@@ -69,7 +107,7 @@ function! ghcmod#command#type_insert(force) "{{{
   endif
 
   let l:module = ghcmod#detect_module()
-  let l:types = ghcmod#type(line('.'), col('.'), l:path, l:module)
+  let l:types = ghcmod#type(line('.'), ghcmod#util#getcol(), l:path, l:module)
   if empty(l:types) " Everything failed so let's just abort
     call ghcmod#util#print_error('ghcmod#command#type_insert: Cannot guess type')
     return
@@ -80,7 +118,7 @@ function! ghcmod#command#type_insert(force) "{{{
 
   if l:offset == 1 " We're doing top-level, let's try to use :info instead
     let l:info = ghcmod#info(l:fexp, l:path, l:module)
-    if l:info !~# '^Dummy:0:0:Error' " Continue only if we don't find errors
+    if !empty(l:info) " Continue only if we don't find errors
       let l:info = substitute(l:info, '\n\|\t.*', "", "g") " Remove extra lines
       let l:info = substitute(l:info, '\s\+', " ", "g") " Compress whitespace
       let l:info = substitute(l:info, '\s\+$', "", "g") " Remove trailing whitespace

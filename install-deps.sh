@@ -1,5 +1,5 @@
 #!/bin/sh
-set -e
+set -ex
 
 if [ -d tinytest ]; then
   (cd tinytest; git pull origin master)
@@ -17,4 +17,5 @@ fi
 make -f make_unix.mak
 
 cabal update
-cabal install ghc-mod
+cabal install happy
+cabal install -j ghc-mod
